@@ -37,6 +37,7 @@ class Haxmin {
 	private static var keywordElse:Int;
 	private static var keywordWhile:Int;
 	private static var keywordCatch:Int;
+	private static var keywordFinally:Int;
 	public static var SL_EXCLUDE:Array<String>;
 	//
 	private static inline function isNewline(k:Int) {
@@ -95,12 +96,13 @@ class Haxmin {
 		keywordElse = SL_KEYWORD.get("else");
 		keywordCatch = SL_KEYWORD.get("catch");
 		keywordWhile = SL_KEYWORD.get("while");
+		keywordFinally = SL_KEYWORD.get("finally");
 		// basic exclusion list:
 		SL_EXCLUDE = [
 		// console and tracing:
 		"console", "assert", "clear", "count", "debug", "error", "info", "log", "time", "trace", "warn",
 		// typeof
-		"object", "boolean", "number", "string", "xml",
+		"object", "boolean", "number", "string", "xml", "void",
 		// top-level in window:
 		"window", "navigator", "document", "body", "location", "href",
 		// elements:
@@ -164,6 +166,7 @@ class Haxmin {
 				} else z = true;
 				if (z) { // regular expression
 					q = p - 1;
+					p--;
 					while (++p < l) switch (k = d.charCodeAt(p)) {
 					case "/".code: break;
 					case "\r".code, "\n".code: break;
@@ -210,7 +213,7 @@ class Haxmin {
 				r[++n] = TSy(new SubString(d, q, 1));
 			}
 		case "!".code, "=".code:
-			// `!`, `!=`, `!==`
+			// `!`, `!=`, `!==`, `===`
 			q = p;
 			if (next() == "=".code) {
 				if (next() != "=".code) p--;
@@ -445,6 +448,7 @@ class Haxmin {
 			kwElse = keywordElse,
 			kwWhile = keywordWhile,
 			kwCatch = keywordCatch,
+			kwFinally = keywordFinally,
 			get_ = "get_",
 			set_ = "set_";
 		//
@@ -456,29 +460,40 @@ class Haxmin {
 			// micro-optimizations and fixes:
 			if (tk != null) switch (tk) {
 			case TId(_), TNu(_): switch (ltk) {
-				case TId(_): xc = " ".code;
-				case TKw(_): xc = " ".code;
-				case TNu(_): xc = " ".code;
+				// insert a space between pairs of ids/numbers/keywords [1]:
+				case TId(_), TKw(_), TNu(_): xc = " ".code;
+				// insert a semicolon between "}" and ids/numbers:
 				case TFlow(fp): if (fp == "}".code) xc = ";".code;
 				default:
 				}
 			case TKw(kw): switch (ltk) {
-				case TFlow(fc): if (fc == "}".code && kw != kwElse
-				&& kw != kwWhile && kw != kwCatch) xc = ";".code;
-				case TKw(_): xc = " ".code;
-				case TId(_), TNu(_): xc = " ".code;
+				// insert a semicolon between "}" and keywords:
+				case TFlow(fc):
+					if (fc == "}".code && kw != kwElse
+				&& kw != kwWhile && kw != kwCatch && kw != kwFinally) xc = ";".code;
+				// insert a space between pairs of ids/numbers/keywords [2]:
+				case TKw(_), TId(_), TNu(_): xc = " ".code;
 				default:
 				}
-			case TFlow(fc):
-				if (fc == "}".code) switch (ltk) {
-				case TFlow(fp): if (fp == ";".code) vi = false;
-				default:
-				} else if (fc == "]".code) switch (ltk) {
-				case TFlow(fp): if (fp == ",".code) vi = false;
-				default:
+			case TFlow(fc): switch (fc) {
+				case "}".code: switch (ltk) {
+					case TFlow(fp): switch (fp) {
+						// last semicolon before "}" can be omitted:
+						case ";".code: vi = false;
+						// last comma before "}" *should* be omitted:
+						case ",".code: vi = false;
+						}
+					default:
+					}
+				case "]".code: switch (ltk) {
+					// last comma before "]" *should* be omitted:
+					case TFlow(fp): if (fp == ",".code) vi = false;
+					default:
+					} 
 				}
 			case TSy(s): switch (ltk) {
 				case TSy(sp):
+					// ensure that "touching" symbols do not accidentally form an *crement operator:
 					k0 = sp.charCodeAt(sp.length - 1);
 					k1 = s.charCodeAt(0);
 					if ((k0 == "+".code || k0 == "-".code) && (k1 == "+".code || k1 == "-".code)) {
@@ -496,7 +511,7 @@ class Haxmin {
 			case TSy(o): o.writeTo(b); c += o.length;
 			case TSi(o): b.addChar(o); c++;
 			case TId(o, t):
-				if (t != 0) {
+				if (t != 0) { // get_/set_ prefix
 					b.addSub(t > 0 ? get_ : set_, 0);
 					c += (t > 0 ? get_ : set_).length;
 				}
@@ -504,7 +519,7 @@ class Haxmin {
 				c += o.length;
 			case TSt(o, t, d):
 				b.addChar(d ? "\"".code : "'".code);
-				if (t != 0) {
+				if (t != 0) { // get_/set_ prefix
 					b.addSub(t > 0 ? get_ : set_, 0);
 					c += (t > 0 ? get_ : set_).length;
 				}
@@ -516,7 +531,7 @@ class Haxmin {
 			case TRx(o): o.writeTo(b); c += o.length;
 			default:
 			}
-			//b.addSub(s = tkString(ltk), 0);
+			// extra character handling:
 			if (xc != 0) { b.addChar(xc); c++; }
 			// linebreaks:
 			if (c >= 8000) switch (ltk) {
@@ -530,25 +545,13 @@ class Haxmin {
 		}
 		return b.toString();
 	}
-	/*public static function tkString(t:Token):String {
-		var r = "";
-		if (t == null) return r;
-		switch (t) {
-			case TFlow(o): r = String.fromCharCode(o);
-			case TDot: r = ".";
-			case TSy(o): r = o;
-			case TSi(o): r = String.fromCharCode(o);
-			case TId(o): r = o;
-			case TKw(o): r = SM_KEYWORD[o];
-			case TSt(o): r = "\"" + o + "\"";
-			case TNu(o): r = o;
-			case TRx(o): r = o;
-		}
-		return r;
-	}*/
-	///
 }
 
+/**
+ * Represents a pointer to string fragment.
+ * Needed because Neko lacks immutable strings
+ * (thus string operations cause reallocations).
+ */
 class SubString {
 	//
 	public var string:String;
@@ -579,13 +582,17 @@ class SubString {
 	
 	public inline function writeTo(buffer:StringBuf):Void {
 		buffer.addSub(string, offset, length);
-		//buffer.addSub(string.substr(offset, length), 0);
 	}
 	
 	public inline function charCodeAt(position:Int):Int {
 		return StringTools.fastCodeAt(string, offset + position);
 	}
 	
+	/**
+	 * Can be executed post-init to resolve whether this Substring has a get_/set_ prefix.
+	 * String offset is changed accordingly in process.
+	 * @return -1 for `get_`, +1 for `set_`, 0 for no prefix.
+	 */
 	public function prefix():Int {
 		var i:Int, z:Bool;
 		if (length >= 4 && charCodeAt(3) == "_".code
@@ -599,7 +606,12 @@ class SubString {
 	}
 }
 
+/**
+ * Represents a Map-like structure that avoids the use of String type for keys
+ * (again, for Neko VM performance).
+ */
 class StringLessMap<T> {
+	/// index is character code, value is map for next character in string
 	private var map:Map<Int, StringLessMap<T>>;
 	private var value:T;
 	
